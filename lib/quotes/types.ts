@@ -21,12 +21,12 @@ export type ProviderFailure={provider:string;code:string;message:string;retryAt?
 export type ProviderContext={fetch:typeof fetch;now:()=>number;config:QuoteConfig};
 export type QuoteConfig={
  binanceEnabled:boolean;okxEnabled:boolean;legacyEnabled:boolean;
- coingeckoKey?:string;alpacaKey?:string;alpacaSecret?:string;alpacaFeed:'iex'|'sip'|'delayed_sip';
+ coingeckoKey?:string;alpacaKey?:string;alpacaSecret?:string;alpacaFeed:'iex'|'sip'|'delayed_sip';alpacaTradingEnvironment?:'paper'|'live';
  longbridgeUrl?:string;longbridgeToken?:string;akshareUrl?:string;akshareToken?:string;
  longbridgeKey?:string;longbridgeSecret?:string;longbridgeAccessToken?:string;longbridgeDelaySeconds?:number;longbridgeSymbols:Record<string,string>;
  cryptoSymbols:Record<string,string>;
  pollMs:number;cryptoTtlMs:number;equityTtlMs:number;maxStaleMs:number;
- coingeckoMonthlyLimit:number;legacyRealtimeEnabled?:boolean;
+ coingeckoMonthlyLimit:number;streamWriteMinuteLimit?:number;legacyRealtimeEnabled?:boolean;
 };
 export type Provider={id:string;supports:(a:Instrument)=>boolean;fetch:(a:Instrument[],ctx:ProviderContext)=>Promise<Record<string,StandardQuote>>};
 export type Candle={time:string;open:number;high:number;low:number;close:number;volume:number;closed:boolean|null};

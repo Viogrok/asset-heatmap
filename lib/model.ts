@@ -1,6 +1,7 @@
 import {nextPlanTime} from './dca.ts';
 import Decimal from 'decimal.js';
 import {z} from 'zod';
+import {validateAssetMapping} from './quotes/identity.ts';
 export type Market='A股'|'港股'|'美股'|'加密';
 export type Asset={id:string;name:string;symbol:string;market:Market;listing:string;currency:string;kind:'ETF'|'指数'|'加密'|'股票';tencent?:string;yahoo?:string;coin?:string;index?:string};
 export const assets:Asset[]=[
@@ -47,6 +48,7 @@ export function validateState(s:State){
  z.object({version:z.literal(1),entries:z.array(entrySchema).max(10000),drafts:z.array(entrySchema).max(100),custom:z.array(assetSchema).max(100),watch:z.array(z.string().max(64)).max(200),plans:z.array(z.object({id:z.string().min(1).max(100),asset:z.string().max(64),amount,currency:z.enum(['CNY','USD','HKD','USDT']),start:z.string().datetime({offset:true}),every:z.number().int().min(1).max(10000),unit:z.enum(['hour','day','week','month']),skips:z.array(z.string().datetime({offset:true})).max(10000),paused:z.boolean().optional(),resumeAt:z.string().datetime({offset:true}).optional(),sourcePlan:z.string().max(100).optional(),sourceName:z.string().max(100).optional(),sourceTotal:amount.optional(),sourcePercent:amount.optional(),sourceStart:z.string().datetime({offset:true}).optional(),sourceWallet:z.string().max(100).optional(),sourceTimeVerified:z.boolean().optional(),sourceNextText:z.string().max(100).optional(),sourceStartText:z.string().max(100).optional(),sourceIdOrigin:z.enum(['local','binance']).optional(),sourcePaused:z.boolean().optional()})).max(100),settings:z.object({theme:z.enum(['system','light','dark']),currency:z.enum(['CNY','USD']),palette:z.boolean(),marketPalettes:z.record(z.boolean()),refresh:z.union([z.literal(0),z.literal(1),z.literal(5),z.literal(15)])})}).parse(s);
  if(s.version!==1||!Array.isArray(s.entries)||!Array.isArray(s.plans)||!Array.isArray(s.watch)||!Array.isArray(s.custom)||!Array.isArray(s.drafts)||!s.settings)throw Error('备份格式不兼容');
  const ids=new Set([...assets,...s.custom].map(a=>a.id)); const seen=new Set();
+ for(const a of s.custom)validateAssetMapping(a);
  const providers=new Set<string>();for(const a of [...assets,...s.custom]){const k=a.tencent?'tx:'+a.tencent:a.yahoo?'yh:'+a.yahoo:a.coin?'cg:'+a.coin:a.id;if(providers.has(k))throw Error('同一行情资产已存在，请使用原有资产');providers.add(k);}
  if(ids.size!==assets.length+s.custom.length)throw Error('资产编号重复');
  for(const a of s.custom){if(a.kind==='指数')throw Error('自定义资产类型不支持');}

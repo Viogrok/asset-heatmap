@@ -47,3 +47,7 @@ yarn-error.log*
 
 /private/
 *.backup.json
+# Optional Python bridge environments and caches
+**/.venv/
+**/__pycache__/
+*.pyc

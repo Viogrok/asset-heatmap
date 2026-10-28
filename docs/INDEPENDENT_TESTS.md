@@ -1,24 +1,35 @@
-# 实时行情独立测试报告
+# 行情与参考数据独立测试报告
 
 检查日期：2026-10-28（Asia/Shanghai）
 
 ## 自动检查
 
-- 完成SSE重构前，既有 Node 测试通过 50/50 项；当前 `node --experimental-strip-types --test tests/*.test.ts` 通过 59/59 项，其中 `tests/realtime-behavior.test.ts` 通过 8/8 项。
-- `npx tsc --noEmit`：最新行情修复、兼容报价接口批量读写及新测试落地后通过。
-- `npm run lint`：基线检查失败，69 errors、10 warnings。全项目已有多处 `no-explicit-any` 和 React Hooks 规则错误；实时行情相关的既有报错包括 `hooks/use-kraken-live.ts` 中的 `no-explicit-any` 与 `set-state-in-effect`。重构后没有重跑全项目 lint。
-- 新增 `tests/realtime-behavior.test.ts`，用注入时钟和调度器验证：慢批量读取、Collector `tick`、persist 在等待时不阻塞 heartbeat；同一后台任务未完成时不会重入；重复 `CloseBarrier.close` 共用租约清理，并在释放完成后关闭响应；SSE 不调用 `QuoteService.get`；55 秒时结束发送并等待租约 release 后关闭；客户端取消期间真实 Collector 的 pending upstream fetch 会收到 abort、租约释放且不触发供应商熔断；价格接收年龄正确降级为 `DELAYED`/`STALE`；USDT币种与源时间不变，美股缺少可靠时间戳时不合成时间；客户端会删除 `unavailable` 指定的旧报价，且忽略较旧 SSE 帧。
-- `tests/quotes.test.ts` 额外验证 D1 批量写入对较旧 `receivedAt` 的保护，以及 80 键分块读取和重复 key 去重。兼容 `/api/quotes` 的规模查询现按批量读取、租约、写入和释放，最多仍并发处理 4 个规模请求；市场规模计算的调用方式不变。
-- 这些是本地自动化 mock 测试。真实 Collector 的取消用可中止的 mock fetch 覆盖，但不验证真实交易所握手、真实上游网络或浏览器 `EventSource` 的自动重连；55秒轮换由注入的时钟/调度器确定性模拟。
+- `node --experimental-strip-types --test tests/*.test.ts`：81/81 通过。
+- `node node_modules/typescript/bin/tsc --noEmit`：通过。
+- 桥接服务单测：Python 3.12.14，`python -m unittest discover -s . -p test_server.py -v`，4/4 通过。用例模拟 worker，不调用 AKShare 上游。
+- 本轮没有运行 lint。此前单独的基线 lint 记录为 69 errors、10 warnings；该结果不代表本轮后的 lint 状态。
 
-## 基线源码审查发现
+## 主要覆盖
 
-重构前检查 `lib/quotes/stream.ts` 时发现，同一个 SSE 循环在发送下一帧之前会 `await service.get(assets)`。慢行情源会延后报价帧、状态帧和 heartbeat；55秒截止时间也只在每轮开始处判断。本次重构后，新测试覆盖了后台任务隔离和到期关闭顺序。以上均属于代码路径测试，不是生产环境实测。
+- SSE 慢任务隔离、heartbeat、55 秒轮换与租约释放、客户端取消、报价年龄降级、旧帧拒绝和 unavailable 清理。
+- Collector 注册资产超过 512 条时的 D1 keyset 分页；当前请求资产并入订阅；缓存读取失败时发出 fallback 状态、继续 heartbeat，并在缓存恢复后清除错误；写预算短暂拒绝后重试，脏行情按 FIFO 分批写入。
+- D1 批量读写、分块、去重、共享租约、配额窗口和旧接收报价保护；坏映射不得进入上游，也不能让同批有效资产失败；identity 不匹配的毒化旧缓存不会复用。
+- NAV 解析只接受标注、有效日期和正确币种的数据；桥接 NAV 校验资产身份、币种、披露日期；参考日历处理 DST/早收市，Alpaca 默认使用 Paper 日历端点且仅显式 `ALPACA_TRADING_ENV=live` 切换 live 端点；公司行为必须完整分页且匹配请求标的。
+- 桥接 Python 测试覆盖认证、白名单、响应契约、限流、worker 超时及缓存；所有测试均使用本地模拟响应。
 
-## 端到端边界
+以上自动检查验证本地代码路径与 fixture，不证明真实供应商权限、生产部署、生产 D1、浏览器 `EventSource` 自动重连或持续行情刷新。
 
-自动测试使用本地 mock、注入时钟和内存存储验证逻辑，不会证明当前生产站点的认证、部署版本、D1绑定、代理/上游连通性或浏览器是否持续收到真实交易所推送。要声称“生产实时刷新已恢复”，仍需在用户已授权的生产浏览器会话中观察真实 SSE：连续跨过55秒连接边界、记录自动重连前后的报价事件和 `receivedAt`，确认源时间、报价状态及币种；本独立测试未访问生产账号、未部署，也未修改账本。
+## 本机运行验证（由主指挥执行，非本代理独立实测）
 
-项目已有的 `docs/MARKET_DATA_VALIDATION.md` 记录了此前一次生产观察（约9秒采样），但那次记录没有覆盖55秒重连或慢 REST 阻塞；本报告不把此前记录当成本次生产验收。
+- CoinGecko Demo 公共行情请求 HTTP 200；BTC、ETH 响应包含市值、流通供应及源时间。
+- 本机应用 `/api/nav?asset=IWM` 返回 HTTP 200，币种 USD、披露日期 2026-10-27；SPY 返回 404（未接入）。这是本机运行验证，不是生产验收。
+- 本机参考数据路由在未配置 Alpaca 凭据时返回 503 / `NOT_CONFIGURED`；无效日期返回 400。此前无凭据直连 Alpaca Paper 返回 HTTP 401，只能说明该请求未获授权，不能证明业务数据接通。
+- 本机 loopback AKShare 桥接：未鉴权 `/nav` 返回 401；携带服务端 token 后，510500 NAV 返回 HTTP 200、CNY、披露日期 2026-10-28；`/quotes` 返回 HTTP 502，故 ETF 行情仍未接通。桥接服务随后停止，未开放公网。
 
-SSE 现在不直接执行 REST 刷新；股票、ETF、指数仍由 Dashboard 经 `/api/quotes` 路径按分钟级/手动刷新。新测试验证该分离不会让共享 SSE 心跳等待行情REST调用，并验证客户端处理 `unavailable` 与拒绝旧帧。以上 fixture 只证明代码路径行为，不能替代交易所网络、生产基础设施或浏览器端到端验收。
+这些运行检查由主指挥执行，未使用生产账号或执行账户交易。未部署、未做生产浏览器观察，也未用真实生产 D1 验收；不得据此声称生产实时刷新已恢复。
+
+## 验收边界
+
+AKShare 桥接当前 NAV 可返回本机真实上游数据，但 quotes 上游仍失败。Alpaca 未注册、未配置凭据，参考日历与公司行为适配器仅经过 fixture 测试；Longbridge SDK/桥接未配置。iShares IWM NAV 的本机 HTTP 验证与其它未接入基金无关。真实行情覆盖、权限、时效和生产环境仍需分别核验。
+
+SSE 自动化使用注入时钟和本地 mock；真实 Collector 取消测试以可中止的 mock fetch 验证 abort，不代表连接了交易所。跨过 55 秒边界的轮换由注入调度器模拟，没有观察浏览器 EventSource 自动重连。

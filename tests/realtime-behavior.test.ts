@@ -17,6 +17,7 @@ type Scheduled={work:()=>void;delay:number};
 type StoreOverrides={
  lease?:QuoteStore['lease'];
  release?:QuoteStore['release'];
+ budget?:QuoteStore['budget'];
  getMany?:<T>(keys:string[])=>Promise<Map<string,Stored<T>>>;
  putMany?:QuoteStore['putMany'];
 };
@@ -51,7 +52,7 @@ function harness(assetsForStream:Asset[],options:StreamOptions={},storeOverrides
   async put(key:string,value:unknown,updated:number){values.set(key,{value,updated});},
   async lease(key:string,owner:string,now:number,ttl:number){leaseCalls++;return storeOverrides.lease?storeOverrides.lease(key,owner,now,ttl):false;},
   async release(key:string,owner:string){releases++;await storeOverrides.release?.(key,owner);},
-  async budget(){return true;},
+  async budget(key,limit,period,now,cost){return storeOverrides.budget?storeOverrides.budget(key,limit,period,now,cost):true;},
   async list<T>(prefix:string){return [...values.entries()].filter(([key])=>key.startsWith(prefix)).map(([,value])=>value as Stored<T>);},
   async getMany<T>(keys:string[]){if(storeOverrides.getMany)return storeOverrides.getMany<T>(keys);const out=new Map<string,Stored<T>>();for(const key of keys){const value=values.get(key);if(value)out.set(key,value as Stored<T>);}return out;},
   async putMany(entries,updated){if(storeOverrides.putMany){await storeOverrides.putMany(entries,updated);return;}for(const {key,value} of entries)values.set(key,{value,updated});},
@@ -99,6 +100,75 @@ test('慢DB读取、Collector和持久化不阻塞SSE心跳，后台任务不重
   quoteRead.resolve(new Map());tick.resolve();persist.resolve();await settle();h.signal.abort();await h.client.done;
  }
  assert.equal(h.releases(),1);assert.ok(collectorStops>=1);
+});
+
+test('Collector注册表为空时仍订阅当前请求资产',async()=>{
+ let collected:ReturnType<typeof instrument>[]=[];
+ const h=harness([btc],{createCollector:(_service,registered)=>{
+  collected=registered;return {state:{status:'connecting',provider:null,message:'test'},tick:async()=>{},persist:async()=>{},stop:()=>{}};
+ }},{lease:async()=>true,putMany:async()=>{}});
+ try{
+  await until(()=>collected.length>0,'Collector注册资产');
+  assert.ok(collected.some(a=>a.assetId===instrument(btc).assetId),'当前请求资产必须加入Collector资产集合');
+ }finally{h.signal.abort();await h.client.done;}
+});
+
+test('共享缓存读取失败时明确降级且心跳继续，缓存恢复后清除错误状态',async()=>{
+ const start=Date.parse('2026-10-28T00:00:00.000Z'),quote=realtime(btc,'okx',start-1000,100,'USDT',new Date(start-1100).toISOString());let reads=0;
+ const h=harness([btc],{}, {getMany:async<T>(keys:string[])=>{
+  if(!keys.every(key=>key.startsWith('md:v1:quote:')))return new Map<string,Stored<T>>();
+  reads++;if(reads===1)throw new Error('simulated cache read failure');
+  return new Map([[quoteKeyForTest(quote.assetId),{value:quote,updated:start} as Stored<T>]]);
+ }});
+ try{
+  await until(()=>reads===1,'首次共享报价缓存读取');
+  await h.fire();
+  await until(()=>h.client.events.some(e=>e.event==='status'&&e.data.cacheError===true),'缓存错误状态');
+  const failed=h.client.events.filter(e=>e.event==='status').at(-1)!.data;
+  assert.equal(failed.status,'fallback');assert.equal(failed.cacheError,true);
+  const heartbeatCount=()=>h.client.events.filter(e=>e.event==='heartbeat').length,before=heartbeatCount();
+  h.setTime(h.time()+10000);await h.fire();await until(()=>reads===2,'缓存重试');
+  h.setTime(h.time()+1000);await h.fire();
+  await until(()=>h.client.events.filter(e=>e.event==='status').at(-1)?.data.cacheError===false,'缓存错误清除');
+  assert.ok(heartbeatCount()>before,'读取失败期间SSE仍持续发送heartbeat');
+ }finally{h.signal.abort();await h.client.done;}
+});
+
+function quoteKeyForTest(assetId:string){return 'md:v1:quote:'+assetId;}
+
+test('行情持久化预算暂不可用后会重试，脏行情按FIFO逐批写入',async()=>{
+ const eth=assets.find(a=>a.id==='ETH')!;
+ const listeners=new Map<string,((event:{data:string})=>void)[]>(),writes:string[][]=[],budgetResults=[false,true,true],requestUrls:string[]=[];let socketReady=false,registryWritten=false;
+ const socket={accept(){},send(){},close(){},addEventListener(type:string,listener:(event:{data:string})=>void){listeners.set(type,[...(listeners.get(type)||[]),listener]);}};
+ const fetcher:typeof fetch=async(input)=>{
+  const url=String(input);
+  requestUrls.push(url);
+  if(url.includes('/api/v3/exchangeInfo'))return new Response(JSON.stringify({symbols:[
+   {baseAsset:'BTC',quoteAsset:'USDT',symbol:'BTCUSDT',status:'TRADING',isSpotTradingAllowed:true},
+   {baseAsset:'ETH',quoteAsset:'USDT',symbol:'ETHUSDT',status:'TRADING',isSpotTradingAllowed:true}
+  ]}));
+  if(url.includes('stream.binance.com')){socketReady=true;return {status:101,webSocket:socket} as unknown as Response;}
+  throw new Error('unexpected fixture URL: '+url);
+ };
+ const h=harness([btc,eth],{}, {
+  lease:async()=>true,
+  budget:async(key)=>key==='md:stream-write-minute'?(budgetResults.shift()??true):true,
+  putMany:async(entries)=>{if(entries.some(x=>x.key.startsWith('md:v1:instrument:')))registryWritten=true;const keys=entries.map(x=>x.key).filter(key=>key.startsWith('md:v1:quote:'));if(keys.length)writes.push(keys);}
+ },{real:true,fetch:fetcher,config:quoteConfig({QUOTE_STREAM_WRITES_PER_MINUTE:'6',QUOTE_OKX_ENABLED:'false'})});
+ try{
+  await h.fire();await until(()=>registryWritten,'current asset registry write');await settle();await h.fire();
+  await until(()=>socketReady&&listeners.has('message'),'fixture WebSocket connection: '+JSON.stringify(requestUrls));
+  const message=(symbol:string,price:string)=>{
+   for(const listener of listeners.get('message')||[])listener({data:JSON.stringify({s:symbol,c:price,E:Date.now()})});
+  };
+  message('BTCUSDT','100');message('ETHUSDT','200');
+  h.setTime(h.time()+10000);await h.fire();await until(()=>budgetResults.length===2,'预算拒绝首次写入');
+  assert.equal(writes.length,0,'预算拒绝时保留全部脏行情');
+  h.setTime(h.time()+10000);await h.fire();await until(()=>writes.length===1,'预算恢复后的首批持久化');
+  assert.deepEqual(writes[0],[quoteKeyForTest(instrument(btc).assetId)],'先写入最早进入队列的BTC');
+  h.setTime(h.time()+10000);await h.fire();await until(()=>writes.length===2,'后续批次持久化');
+  assert.deepEqual(writes[1],[quoteKeyForTest(instrument(eth).assetId)],'BTC清理后再写入ETH');
+ }finally{h.signal.abort();await h.client.done;}
 });
 
 test('55秒到期后停止帧发送，等租约释放完成才关闭响应',async()=>{

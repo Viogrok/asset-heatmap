@@ -9,6 +9,7 @@ npm ci
 npm run build
 # 按 drizzle/ 内顺序，仅应用尚未执行的迁移：
 node node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0000_rapid_doctor_spectrum.sql
+node node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0001_market_data.sql
 npm run dev
 ```
 
@@ -20,7 +21,7 @@ npm run dev
 
 ```powershell
 node node_modules/typescript/bin/tsc --noEmit
-node --experimental-strip-types --test tests/model.test.ts
+node --experimental-strip-types --test tests/*.test.ts
 ```
 
 ## 私人数据
@@ -34,6 +35,10 @@ node --experimental-strip-types --test tests/model.test.ts
 ## 部署与迁移
 
 `.openai/hosting.json`保存Sites项目编号和DB绑定；使用Sites工作流发布，平台在部署时执行Drizzle迁移。源码GitHub备份必须为私有仓库，排除private、.wrangler、密钥、导出文件。
+
+源码私有备份：[Viogrok/asset-heatmap](https://github.com/Viogrok/asset-heatmap)。本机 `github` remote 对应此仓库。Sites 仍负责动态服务托管，GitHub 仓库不等于运行网站的 GitHub Pages。
+
+GitHub 开启了邮箱隐私保护，因此备份使用 GitHub noreply 作者的源码快照提交；原始完整历史保留在本机与 Sites。每次先完成本机/Sites 源码提交，再运行 `pwsh -File scripts/sync-github.ps1`。脚本只同步已提交的源码树，检查仓库仍为私有，并在远端存在未经核对的新提交时停止；不会上传被忽略的账本或密钥。不要通过关闭邮箱隐私保护来解决推送错误。
 
 业务计算在lib/model.ts；行情适配在lib/market.ts；登录封装在app/chatgpt-auth.ts。迁移时替换登录与D1持久层，复用计算、资产目录和界面，先恢复JSON到测试环境核对。D1支持的SQL结构随drizzle迁移保存。
 

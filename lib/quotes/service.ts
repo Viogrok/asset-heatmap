@@ -1,10 +1,17 @@
-import {instrument} from './identity.ts';
+import {instrument,validateAssetMapping} from './identity.ts';
 import {baseQuote,legacyQuote,ProviderError,validQuote,type Instrument,type Provider,type ProviderContext,type ProviderFailure,type StandardQuote} from './types.ts';
 import type {Asset,Quote} from '../model.ts';
 import type {QuoteStore} from './store.ts';
 
 export const quoteKey=(id:string)=>'md:v1:quote:'+id;
 export const instrumentKey=(id:string)=>'md:v1:instrument:'+id;
+export function usableQuote(a:Instrument,q:StandardQuote){
+ if(!q||!validQuote(q)||q.assetId!==a.assetId||q.symbol.toUpperCase()!==a.symbol.toUpperCase()||q.market!==a.market||q.assetType!==a.assetType)return false;
+ if(a.market!=='CRYPTO'&&a.exchange!=='BINANCE_BSTOCKS'&&q.currency!==a.currency)return false;
+ if(q.provider==='yahoo-public'&&q.providerSymbol!==a.legacy.yahoo)return false;
+ if(q.provider==='tencent-public'&&q.providerSymbol!==a.legacy.tencent)return false;
+ return !q.provider.startsWith('legacy-cache:');
+}
 type Circuit={until:number;code:string;failures:number};
 export class QuoteService{
  store:QuoteStore;providers:Provider[];context:ProviderContext;
@@ -34,15 +41,15 @@ export class QuoteService{
   return {provider,code:error.code,message:error.message,...(cooldown?{retryAt:this.context.now()+cooldown}:{})} satisfies ProviderFailure;
  }
  async get(assets:Asset[]){
-  const ctx=this.context,now=ctx.now(),owner=crypto.randomUUID(),all=assets.map(instrument),unique=[...new Map(all.map(a=>[a.assetId,a])).values()];
+  const invalid:Record<string,string>={},safe=assets.filter(a=>{try{validateAssetMapping(a);return true;}catch{invalid[a.id]='资产代码与行情映射不一致，未获取或共享此资产行情';return false;}});
+  const ctx=this.context,now=ctx.now(),owner=crypto.randomUUID(),all=safe.map(instrument),unique=[...new Map(all.map(a=>[a.assetId,a])).values()];
   const standard:Record<string,StandardQuote>={},previous=new Map<string,StandardQuote>(),pending:Instrument[]=[],owned:string[]=[],failures=new Map<string,ProviderFailure[]>();
-  const stored=await this.store.getMany<unknown>(unique.flatMap(a=>[instrumentKey(a.assetId),quoteKey(a.assetId),'quote-v2:'+a.legacyId]));
+  const stored=await this.store.getMany<unknown>(unique.flatMap(a=>[instrumentKey(a.assetId),quoteKey(a.assetId)]));
   const registration:{key:string;value:unknown}[]=[],acquire:Instrument[]=[];
   for(const a of unique){
    // Registered instruments are public asset metadata, never balances or cost basis.
    const registry=stored.get(instrumentKey(a.assetId));if(!registry||JSON.stringify(registry.value)!==JSON.stringify(a))registration.push({key:instrumentKey(a.assetId),value:a});
-   const old=stored.get(quoteKey(a.assetId)) as {value:StandardQuote;updated:number}|undefined;if(old&&validQuote(old.value))previous.set(a.assetId,old.value);
-   if(!old){const v=stored.get('quote-v2:'+a.legacyId)?.value as Quote|undefined;if(v&&v.price>0&&Number.isFinite(Date.parse(v.fetched))){previous.set(a.assetId,{...baseQuote(a,'legacy-cache:'+v.source,now),lastPrice:v.price,changePercent:v.change,timestamp:v.at,receivedAt:v.fetched,currency:v.currency,quoteStatus:'STALE',warnings:['来自升级前的最近有效缓存，尚未由新数据层核验。']});}}
+   const candidate=stored.get(quoteKey(a.assetId)) as {value:StandardQuote;updated:number}|undefined,old=candidate&&usableQuote(a,candidate.value)?candidate:undefined;if(old)previous.set(a.assetId,old.value);
    const ttl=a.market==='CRYPTO'?ctx.config.cryptoTtlMs:ctx.config.equityTtlMs;
    if(old&&validQuote(old.value)&&now-Date.parse(old.value.receivedAt)<(old.value.quoteStatus==='REALTIME'?30000:ttl)&&old.value.quoteStatus!=='STALE'){const age=now-Date.parse(old.value.receivedAt);standard[a.assetId]=old.value.quoteStatus==='REALTIME'&&age>3000?{...old.value,quoteStatus:'DELAYED',delaySeconds:Math.ceil(age/1000)}:old.value;continue;}
    acquire.push(a);
@@ -62,7 +69,7 @@ export class QuoteService{
      if(provider.id==='akshare'&&!c.akshareUrl)throw new ProviderError('NOT_CONFIGURED','AKShare桥接未配置');
      await this.allowed(provider.id);const result=await provider.fetch(want,ctx);
      const writes:{key:string;value:unknown}[]=[];
-     for(const a of want){const q=result[a.assetId];if(!q||!validQuote(q)){const fs=failures.get(a.assetId)||[];fs.push({provider:provider.id,code:'NO_QUOTE',message:'未取得此标的的有效行情或映射未支持'});failures.set(a.assetId,fs);continue;}
+     for(const a of want){const q=result[a.assetId];if(!q||!usableQuote(a,q)){const fs=failures.get(a.assetId)||[];fs.push({provider:provider.id,code:'NO_QUOTE',message:'未取得此标的的有效行情或映射未支持'});failures.set(a.assetId,fs);continue;}
       q.failures=failures.get(a.assetId)||[];const prev=previous.get(a.assetId);if(prev&&(prev.provider!==q.provider||prev.currency!==q.currency))q.warnings.push(`信源切换：${prev.provider}/${prev.currency} → ${q.provider}/${q.currency}；价格、涨跌口径与时间按新来源整体替换。`);
       standard[a.assetId]=q;writes.push({key:quoteKey(a.assetId),value:q});
      }
@@ -72,7 +79,7 @@ export class QuoteService{
    }
   }finally{await this.store.releaseMany(owned.map(id=>'refresh:'+id),owner);}
   for(const a of unique){if(standard[a.assetId])continue;const old=previous.get(a.assetId);standard[a.assetId]=old&&now-Date.parse(old.receivedAt)<=ctx.config.maxStaleMs?{...old,quoteStatus:'STALE',failures:failures.get(a.assetId)||[],warnings:[...old.warnings,'在线更新失败，显示最近有效行情；接收时间保持原值。']}:{...baseQuote(a,'none',now),failures:failures.get(a.assetId)||[{provider:'registry',code:'UNSUPPORTED',message:'尚无已核验的数据源或资产映射'}]};}
-  const quotes:Record<string,Quote>={},errors:Record<string,string>={};for(const a of all){const q=standard[a.assetId],legacy=legacyQuote(q);if(legacy)quotes[a.legacyId]=legacy;if(q.quoteStatus==='UNAVAILABLE'||q.quoteStatus==='STALE')errors[a.legacyId]=q.failures.map(f=>f.provider+': '+f.message).join('；')||q.quoteStatus;}
+  const quotes:Record<string,Quote>={},errors:Record<string,string>={...invalid};for(const a of all){const q=standard[a.assetId],legacy=legacyQuote(q);if(legacy)quotes[a.legacyId]=legacy;if(q.quoteStatus==='UNAVAILABLE'||q.quoteStatus==='STALE')errors[a.legacyId]=q.failures.map(f=>f.provider+': '+f.message).join('；')||q.quoteStatus;}
   return {quotes,standardQuotes:standard,errors};
  }
 }

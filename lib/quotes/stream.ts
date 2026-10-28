@@ -1,5 +1,5 @@
-import {instrument} from './identity.ts';
-import {instrumentKey,quoteKey,type QuoteService} from './service.ts';
+import {instrument,validateAssetMapping} from './identity.ts';
+import {instrumentKey,quoteKey,usableQuote,type QuoteService} from './service.ts';
 import {verifiedCryptoPairs} from './crypto.ts';
 import {krakenPair} from '../kraken.ts';
 import {baseQuote,epoch,finite,positive,legacyQuote,ProviderError,type Instrument,type StandardQuote} from './types.ts';
@@ -73,8 +73,11 @@ class Collector implements CollectorPort{
  }
  async persist(){
   // 10-second durable batches reduce D1 writes. Same-isolate clients use the live memory copy.
-  const batch=[...this.dirty.values()];if(!batch.length)return;
-  const now=Date.now();if(!await this.service.store.budget('md:stream-write-day',60000,86400000,now,batch.length)){this.persistenceLimited=true;return;}
+  // Fair FIFO samples prevent active symbols exhausting the entire day's writes.
+  // Unwritten entries retain their insertion order and latest value for the next batch.
+  const limit=this.service.context.config.streamWriteMinuteLimit??40;
+  const batch=[...this.dirty.values()].slice(0,Math.max(1,Math.floor(limit/6)));if(!batch.length)return;
+  const now=Date.now();if(!await this.service.store.budget('md:stream-write-minute',limit,60000,now,batch.length)){this.persistenceLimited=true;return;}
   await this.service.store.putMany(batch.map(q=>({key:quoteKey(q.assetId),value:q})),now);this.persistenceLimited=false;
   for(const q of batch)if(this.dirty.get(q.assetId)===q)this.dirty.delete(q.assetId);
  }
@@ -92,15 +95,17 @@ export type StreamOptions={
 };
 
 export function streamResponse(req:Request,service:QuoteService,assets:Asset[],options:StreamOptions={}){
- const owner=crypto.randomUUID(),requested=[...new Map(assets.map(instrument).map(a=>[a.assetId,a])).values()],encoder=new TextEncoder();
+ const mappingValid=(a:Asset)=>{try{validateAssetMapping(a);return true;}catch{return false;}};
+ const owner=crypto.randomUUID(),requested=[...new Map(assets.filter(mappingValid).map(instrument).map(a=>[a.assetId,a])).values()],encoder=new TextEncoder();
  const now=options.now||service.context.now,schedule=options.schedule||((fn:()=>void,ms:number)=>setTimeout(fn,ms));
  const clear=options.clear||((handle:unknown)=>clearTimeout(handle as ReturnType<typeof setTimeout>));
  let stop:()=>Promise<void>=async()=>{};
  const body=new ReadableStream<Uint8Array>({start(controller){
   let active=true,leader=false,collector:CollectorPort|undefined,timer:unknown,lastRenew=-Infinity,lastRead=-Infinity,lastPersist=-Infinity,lastFx=-Infinity;
+  let cacheReadError=false,controlError=false,persistError=false;
   const started=now(),cached=new Map<string,StandardQuote>(),closing=new CloseBarrier();let fx:unknown;
   const backgroundError=()=>{};
-  const control=new NonOverlappingTask(backgroundError),connection=new NonOverlappingTask(backgroundError),reading=new NonOverlappingTask(backgroundError),persisting=new NonOverlappingTask(backgroundError),fxTask=new NonOverlappingTask(backgroundError);
+  const control=new NonOverlappingTask(()=>{controlError=true;}),connection=new NonOverlappingTask(backgroundError),reading=new NonOverlappingTask(()=>{cacheReadError=true;}),persisting=new NonOverlappingTask(()=>{persistError=true;}),fxTask=new NonOverlappingTask(backgroundError);
   const send=(event:string,value:unknown)=>{if(active)controller.enqueue(encoder.encode('event: '+event+'\ndata: '+JSON.stringify(value)+'\n\n'));};
   stop=()=>{
    if(!active)return closing.close(async()=>{},()=>{});active=false;req.signal.removeEventListener('abort',abort);
@@ -113,23 +118,24 @@ export function streamResponse(req:Request,service:QuoteService,assets:Asset[],o
    if(!active)return;const stamp=now();if(stamp-started>=(options.lifetimeMs??55000)){void stop().catch(()=>{});return;}
    // Ownership and cache IO are independent of delivery. Slow upstream calls cannot stop heartbeats.
    if(stamp-lastRenew>=8000&&control.run(async()=>{
-    const owns=await service.store.lease('md:stream-leader',owner,now(),24000);
+    const owns=await service.store.lease('md:stream-leader',owner,now(),24000);controlError=false;
     if(!active){if(owns)await service.store.release('md:stream-leader',owner);return;}
     if(!owns&&leader){collector?.stop();collector=undefined;}leader=owns;
     if(leader&&!collector){
      const saved=await service.store.getMany<Instrument>(requested.map(a=>instrumentKey(a.assetId)));
      const changed=requested.filter(a=>JSON.stringify(saved.get(instrumentKey(a.assetId))?.value)!==JSON.stringify(a));
      await service.store.putMany(changed.map(a=>({key:instrumentKey(a.assetId),value:a})),now());
-     const publicAssets=(await service.store.list<Instrument>('md:v1:instrument:')).map(x=>x.value);
+     const registered=(await service.store.list<Instrument>('md:v1:instrument:')).map(x=>x.value).filter(a=>a?.legacy&&mappingValid(a.legacy)&&instrument(a.legacy).assetId===a.assetId);
+     const publicAssets=[...new Map([...registered,...requested].map(a=>[a.assetId,a])).values()];
      if(active&&leader)collector=(options.createCollector||((s,a)=>new Collector(s,a)))(service,publicAssets);
     }
    }))lastRenew=stamp;
-   if(leader&&collector){connection.run(()=>collector!.tick());if(stamp-lastPersist>=10000&&persisting.run(()=>collector!.persist()))lastPersist=stamp;}
-   if(stamp-lastRead>=10000&&reading.run(async()=>{const values=await service.store.getMany<StandardQuote>(requested.map(a=>quoteKey(a.assetId)));if(active)for(const a of requested){const q=values.get(quoteKey(a.assetId))?.value;if(q)cached.set(a.assetId,q);}}))lastRead=stamp;
+   if(leader&&collector){const current=collector;connection.run(()=>current.tick());if(stamp-lastPersist>=10000&&persisting.run(async()=>{await current.persist();persistError=false;}))lastPersist=stamp;}
+   if(stamp-lastRead>=10000&&reading.run(async()=>{const values=await service.store.getMany<StandardQuote>(requested.map(a=>quoteKey(a.assetId)));cacheReadError=false;if(active)for(const a of requested){const q=values.get(quoteKey(a.assetId))?.value;if(q)cached.set(a.assetId,q);}}))lastRead=stamp;
    const standard:Record<string,StandardQuote>={},quotes:Record<string,unknown>={},unavailable:string[]=[];
    let fresh=0,provider:string|null=null;
-   for(const a of requested){const memory=(options.readLive||((id:string)=>liveMemory.get(id)))(a.assetId),stored=cached.get(a.assetId);
-    let q=memory&&(!stored||Date.parse(memory.receivedAt)>=Date.parse(stored.receivedAt))?memory:stored;if(!q)continue;
+   for(const a of requested){const rawMemory=(options.readLive||((id:string)=>liveMemory.get(id)))(a.assetId),rawStored=cached.get(a.assetId),memory=rawMemory&&usableQuote(a,rawMemory)?rawMemory:undefined,stored=rawStored&&usableQuote(a,rawStored)?rawStored:undefined;
+    let q=memory&&(!stored||Date.parse(memory.receivedAt)>=Date.parse(stored.receivedAt))?memory:stored;if(!q){if(rawMemory||rawStored)unavailable.push(a.legacyId);continue;}
     const age=stamp-Date.parse(q.receivedAt);if(age>service.context.config.maxStaleMs){unavailable.push(a.legacyId);continue;}
     if(q.quoteStatus==='REALTIME'&&age>30000)q={...q,quoteStatus:'STALE'};else if(q.quoteStatus==='REALTIME'&&age>3000)q={...q,quoteStatus:'DELAYED',delaySeconds:Math.ceil(age/1000)};
     else if(q.quoteStatus==='SNAPSHOT'&&age>Math.max(60000,(a.market==='CRYPTO'?service.context.config.cryptoTtlMs:service.context.config.equityTtlMs)*3))q={...q,quoteStatus:'STALE'};
@@ -138,8 +144,9 @@ export function streamResponse(req:Request,service:QuoteService,assets:Asset[],o
    if(stamp-lastFx>=30000&&fxTask.run(async()=>{const next=await(options.loadFx||referenceFx)(service,standard);if(active&&next)fx=next;}))lastFx=stamp;
    if(Object.keys(quotes).length||unavailable.length)send('quotes',{quotes,standardQuotes:standard,unavailable,...(fx?{fx}:{})});
    const state=collector?.state;
-   send('status',{status:fresh>0?'live':state?.status==='connecting'?'connecting':'fallback',provider:provider||state?.provider||null,
-    message:fresh>0?'服务端已收到新行情':state?.message||'从服务端共享缓存读取行情',freshQuoteCount:fresh,persistenceLimited:collector?.persistenceLimited||false});
+   const cacheError=cacheReadError||controlError||persistError;
+   send('status',{status:cacheError?'fallback':fresh>0?'live':state?.status==='connecting'?'connecting':'fallback',provider:provider||state?.provider||null,
+    message:cacheError?'共享行情缓存暂不可用，报价可能延迟':fresh>0?'服务端已收到新行情':state?.message||'从服务端共享缓存读取行情',freshQuoteCount:fresh,persistenceLimited:collector?.persistenceLimited||false,cacheError});
    send('heartbeat',{receivedAt:new Date(stamp).toISOString()});
    if(active)timer=schedule(frame,options.heartbeatMs??1000);
   };

@@ -36,6 +36,18 @@ test('D1批量写入保留最新接收报价，批量读取跨分块且去重',a
  assert.equal((result.get(key)?.value as StandardQuote|undefined)?.lastPrice,9,'较旧receivedAt不得覆盖已持久化的新报价');
  assert.equal((result.get('batch:160')?.value as {index:number}|undefined)?.index,160);
 });
+test('D1资产注册列表按keyset分页，超过512条仍完整返回且顺序稳定',async()=>{
+ const s=store(),count=513;
+ for(let offset=0;offset<count;offset+=80){
+  const rows=Array.from({length:Math.min(80,count-offset)},(_,i)=>{
+   const id=offset+i;return {key:`md:v1:instrument:${String(id).padStart(4,'0')}`,value:{id}};
+  });
+  await s.putMany(rows,5000);
+ }
+ const listed=await s.list<{id:number}>('md:v1:instrument:');
+ assert.equal(listed.length,count,'分页后返回全部注册资产');
+ assert.equal(listed[0].value.id,0);assert.equal(listed.at(-1)?.value.id,count-1);
+});
 test('451冷却不重试受限源，切换币种时整体替换并标记来源',async()=>{
  const s=store();let now=100000,blocked=0;const old={...baseQuote(instrument(btc),'old',now-100000),lastPrice:5,currency:'USDT'};await s.put(quoteKey(old.assetId),old,now-100000);
  const providers:Provider[]=[{id:'binance',supports:()=>true,fetch:async()=>{blocked++;throw new ProviderError('REGION_RESTRICTED','地区限制');}},{id:'other',supports:()=>true,fetch:async([a])=>({[a.assetId]:{...baseQuote(a,'other',now),lastPrice:10,currency:'USD'}})}];
@@ -44,6 +56,19 @@ test('451冷却不重试受限源，切换币种时整体替换并标记来源',
 });
 test('失败保留真实接收时间，过期价格不会补零或假装更新',async()=>{const s=store();let now=100000;const a=instrument(btc),old={...baseQuote(a,'source',1000),lastPrice:7};await s.put(quoteKey(a.assetId),old,1000);const svc=new QuoteService(s,[],{fetch,now:()=>now,config:quoteConfig({QUOTE_MAX_STALE_SECONDS:'60'})});const q=(await svc.get([btc])).standardQuotes[a.assetId];assert.equal(q.quoteStatus,'UNAVAILABLE');assert.equal(q.lastPrice,null);now=2000;const result=await svc.get([btc]);assert.equal(result.standardQuotes[a.assetId].receivedAt,old.receivedAt);});
 test('较旧推送不能覆盖已收到的新行情',async()=>{const s=store(),a=instrument(btc);await s.put(quoteKey(a.assetId),{...baseQuote(a,'new',2000),lastPrice:9},9000);await s.put(quoteKey(a.assetId),{...baseQuote(a,'old',1000),lastPrice:1},10000);assert.equal((await s.get<StandardQuote>(quoteKey(a.assetId)))!.value.lastPrice,9);});
+test('错误映射不会中断其他资产，identity不匹配的旧缓存不会被复用',async()=>{
+ const s=store(),now=Date.parse('2026-10-28T00:00:00Z'),a=instrument(aapl),poison={...baseQuote(a,'yahoo-public',now),lastPrice:999,providerSymbol:'MSFT',currency:'USD',quoteStatus:'SNAPSHOT' as const};
+ await s.put(quoteKey(a.assetId),poison,now);
+ const bad:Asset={...aapl,id:'BAD-AAPL',tencent:'usMSFT'};let requested:string[]=[];
+ const provider:Provider={id:'test',supports:()=>true,fetch:async(want,ctx)=>{
+  requested=want.map(x=>x.assetId);return Object.fromEntries(want.map(x=>[x.assetId,{...baseQuote(x,'test-source',ctx.now()),lastPrice:201,currency:x.currency,quoteStatus:'SNAPSHOT',providerSymbol:x.symbol}]));
+ }};
+ const svc=new QuoteService(s,[provider],{fetch,now:()=>now,config:quoteConfig({})});
+ const result=await svc.get([bad,aapl]);
+ assert.equal(result.standardQuotes[a.assetId].lastPrice,201,'毒化旧缓存应触发新取数');
+ assert.deepEqual(requested,[a.assetId],'坏映射不得进入上游请求，其他资产仍继续处理');
+ assert.match(result.errors[bad.id],/映射不一致/);
+});
 test('缺少可选密钥时不发请求、不消耗CoinGecko月预算',async()=>{const s=store();let calls=0;const ctx={fetch:(async()=>{calls++;throw Error('不应调用');}) as typeof fetch,now:()=>100000,config:quoteConfig({})};await assert.rejects(()=>coingeckoProvider.fetch([instrument(btc)],ctx),/未配置/);assert.equal(calls,0);});
 test('Yahoo区间基准不是昨收，美股腾讯无时区时间不能冒充UTC+8',()=>{const a=instrument(aapl);const q=parseYahoo(a,{chart:{result:[{meta:{regularMarketPrice:100,chartPreviousClose:50,regularMarketTime:1}}]}},1000)!;assert.equal(q.previousClose,null);assert.equal(q.changePercent,null);const parts=Array(33).fill('');parts[1]='Apple';parts[3]='100';parts[4]='90';parts[30]='20261027160000';parts[32]='11.11';assert.equal(parseTencent(a,'v="'+parts.join('~')+'";',0)!.timestamp,null);});
 test('USDT/USD缺失时成本换算失败，不产生虚假的浮盈亏',()=>{const q={price:10,change:0,at:null,fetched:'',source:'',window:'',currency:'USDT'};assert.equal(priceForCost(btc,q,{rates:{USD:1,CNY:7}}),null);assert.equal(priceForCost(btc,q,{rates:{USD:1,USDT:2}}),5);});

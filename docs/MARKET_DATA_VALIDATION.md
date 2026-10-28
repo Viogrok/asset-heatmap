@@ -2,6 +2,16 @@
 
 核验日期：2026-10-28。价格本身不写入报告；没有用演示价格替代真实网络结果。
 
+## 后续完成项（本轮最终构建前）
+
+- 独立 Luna max 复测：81/81 Node测试、TypeScript与Python3.12桥接4/4单测通过，详见 `INDEPENDENT_TESTS.md`。两名 Terra high 实现可配置参考数据与桥接，两名 Luna max 完成实时链路及供应商/映射安全审查；高优先级错映射共享缓存问题已修复并覆盖回归测试。
+- GitHub 私有源码备份已创建并完成首次推送：`Viogrok/asset-heatmap`。GitHub邮箱保护保持启用；备份提交使用noreply作者，原始历史仍留本机/Sites。最终构建提交会再同步同一源码树。
+- CoinGecko读取已有Demo key，已注入Sites服务端secret（环境修订1），没有明文入库；本机带key的bitcoin/ethereum markets请求HTTP200，均有市值/流通供应/源更新时间。新环境需随此次发布生效，生产验证另行记录。
+- 本机 `/api/nav?asset=IWM` HTTP200，USD、净值日期2026-10-27；未接通的SPY净值返回404。`/api/market-data/reference` 无凭据返回503/NOT_CONFIGURED、非法日期返回400。用户明确暂不注册Alpaca，保留适配器。
+- 随机loopback端口启动AKShare桥接并真实HTTP验证：未鉴权 `/nav` 401；带临时Bearer的510500 `/nav` 200，CNY，净值日期2026-10-28；`/quotes` 502。测试完成后已停止服务，未保存临时token、未开放公网。
+- 当前线上已登录浏览器（发布新改动前）网络观察150个报价事件、150个心跳，覆盖多次原生EventSource重连，stream/quotes均HTTP200，OKX状态live，无loadingFailed。这补齐上一轮缺失的线上浏览器观察；不将其冒充尚未发布代码的生产验收。
+- 共享持久化从整日60k耗尽即停改为分钟预算/FIFO抽样，默认40条/分钟；跨isolate可延迟数十秒，本页内存推送约每秒。缓存错误/写入限流现在会在原状态栏提示。没有承诺免费配额下全天所有设备均逐秒同步。
+
 ## 本轮修复验收（2026-10-28 下午）
 
 - 独立 Luna max 测试 agent 复测 59/59 项通过，`tsc --noEmit` 通过；见 `INDEPENDENT_TESTS.md`。正文下方 50 项及凌晨生产观察是上一版本历史记录。

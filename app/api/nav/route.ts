@@ -1,5 +1,34 @@
-import {getChatGPTUser} from '../../chatgpt-auth';import {getDb} from '../../../db';import {cache,portfolios} from '../../../db/schema';import {eq} from 'drizzle-orm';import {assets} from '../../../lib/model';import {fetchFundNav} from '../../../lib/nav-provider';
-export async function GET(req:Request){const user=await getChatGPTUser();if(!user)return Response.json({error:'请先登录'},{status:401});const id=new URL(req.url).searchParams.get('asset');const db=getDb();const saved=await db.select().from(portfolios).where(eq(portfolios.owner,user.userId)).get();const all=[...assets,...(saved?JSON.parse(saved.payload).custom:[])];const a=all.find(a=>a.id===id);if(!a||a.kind!=='ETF'||!a.tencent||!/^(sh|sz)\d{6}$/.test(a.tencent))return Response.json({error:'当前净值接口覆盖境内上市ETF，此资产暂未接入'},{status:404});const key='nav-v2:'+a.id;const old=await db.select().from(cache).where(eq(cache.key,key)).get();if(old&&Date.now()-old.updated<21600000)return Response.json(JSON.parse(old.payload));
- try{const nav=await fetchFundNav(a);await db.insert(cache).values({key,payload:JSON.stringify(nav),updated:Date.now()}).onConflictDoUpdate({target:cache.key,set:{payload:JSON.stringify(nav),updated:Date.now()}});return Response.json(nav);}catch(e){if(old)return Response.json({...JSON.parse(old.payload),stale:true,warning:'在线更新失败，显示上次披露净值'});return Response.json({error:e instanceof Error?e.message:'净值请求失败'},{status:502});}}
+import {authorizedAssets} from '../../../lib/quotes/assets';
+import {quoteRuntime} from '../../../lib/quotes/runtime';
+import {instrument,validateAssetMapping} from '../../../lib/quotes/identity';
+import {fetchFundNav} from '../../../lib/nav-provider';
+import {fetchIssuerNav,parseBridgeNav} from '../../../lib/quotes/nav-providers';
+import {bridgeUrl,request} from '../../../lib/quotes/transport';
+import type {FundNav} from '../../../lib/nav';
 
-
+export async function GET(req:Request){
+ const all=await authorizedAssets();if(!all)return Response.json({error:'请先登录'},{status:401});
+ const a=all.find(a=>a.id===new URL(req.url).searchParams.get('asset'));
+ const domestic=!!a?.tencent&&/^(sh|sz)\d{6}$/.test(a.tencent),issuer=a?.market==='美股'&&a.symbol==='IWM'&&a.currency==='USD';
+ if(!a||a.kind!=='ETF'||(!domestic&&!issuer))return Response.json({error:'此基金尚无已接入的可靠披露净值源'},{status:404});
+ try{validateAssetMapping(a);}catch{return Response.json({error:'资产代码与净值映射不一致'},{status:400});}
+ const service=quoteRuntime(),i=instrument(a),key='nav-v3:'+i.assetId,now=service.context.now(),headers={'Cache-Control':'private, no-store'};
+ const old=await service.store.get<FundNav>(key);
+ if(old&&now-old.updated<(old.value.stale?600000:21600000))return Response.json(old.value,{headers});
+ const owner=crypto.randomUUID();if(!await service.store.lease('refresh:'+key,owner,now,30000))return old?Response.json({...old.value,stale:true},{headers}):Response.json({error:'净值正在更新，请稍后重试'},{status:503,headers});
+ try{
+  let nav:FundNav|undefined;
+  if(issuer)nav=await fetchIssuerNav('IWM',service.context.fetch);
+  else{
+   try{nav=await fetchFundNav(a);}catch{}
+   const cfg=service.context.config;
+   if((!nav||nav.stale)&&cfg.akshareUrl&&cfg.akshareToken)try{
+    await service.allowed('akshare');const response=await request(service.context,bridgeUrl(cfg.akshareUrl)!+'/nav',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+cfg.akshareToken},body:JSON.stringify({instruments:[{assetId:i.assetId,symbol:i.symbol,market:i.market,assetType:i.assetType,exchange:i.exchange,currency:i.currency}]})});
+    nav=parseBridgeNav(await response.json(),i.assetId,i.currency,now);await service.success('akshare');
+   }catch(e){await service.failure('akshare',e);}
+   if(!nav)throw Error('未取得有效披露净值');
+  }
+  await service.store.put(key,nav,now);return Response.json(nav,{headers});
+ }catch{if(old)return Response.json({...old.value,stale:true,warning:'在线更新失败，显示上次披露净值'},{headers});return Response.json({error:'披露净值源暂不可用'},{status:502,headers});}
+ finally{await service.store.release('refresh:'+key,owner);}
+}
