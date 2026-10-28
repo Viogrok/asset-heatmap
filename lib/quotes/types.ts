@@ -21,7 +21,7 @@ export type ProviderFailure={provider:string;code:string;message:string;retryAt?
 export type ProviderContext={fetch:typeof fetch;now:()=>number;config:QuoteConfig};
 export type QuoteConfig={
  binanceEnabled:boolean;okxEnabled:boolean;legacyEnabled:boolean;
- coingeckoKey?:string;alpacaKey?:string;alpacaSecret?:string;alpacaFeed:'iex'|'sip'|'delayed_sip';alpacaTradingEnvironment?:'paper'|'live';
+ coingeckoKey?:string;alpacaKey?:string;alpacaSecret?:string;alpacaFeed:'iex'|'sip'|'delayed_sip';alpacaTradingEnvironment?:'paper'|'live';invescoNavLicensed?:boolean;
  longbridgeUrl?:string;longbridgeToken?:string;akshareUrl?:string;akshareToken?:string;
  longbridgeKey?:string;longbridgeSecret?:string;longbridgeAccessToken?:string;longbridgeDelaySeconds?:number;longbridgeSymbols:Record<string,string>;
  cryptoSymbols:Record<string,string>;

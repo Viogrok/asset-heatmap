@@ -108,12 +108,16 @@ Sites 支持 WebSockets；目前的证据是实现存在阻塞与清理问题，
 
 验证记录见 `MARKET_DATA_VALIDATION.md`，严格区分fixture、真实本机HTTP/WS、生产环境。真实私人账本不用于fixture、不进Git。
 
-仍需账户或外部条件：Longbridge行情资格；用户暂不注册的Alpaca权限；AKShare生产HTTPS桥接；完整已授权日历/公司行为/证券复权数据；IWM之外的港美ETF NAV；全天常驻采集及各地区的生产连通与许可。CoinGecko key已配置为服务端secret。没有凭据的适配器只表示实现和配置就绪，不表示已接通。
+仍需账户或外部条件：Longbridge行情资格；用户暂不注册的Alpaca权限；AKShare生产HTTPS桥接；完整已授权日历/公司行为/证券复权数据；白名单之外的港美ETF NAV；全天常驻采集及各地区的生产连通与许可。CoinGecko key已配置为服务端secret。没有凭据的适配器只表示实现和配置就绪，不表示已接通。
 
 ## 本轮新增接口与源码同步
 
-`/api/nav?asset=IWM` 提供 iShares 明确披露的每日NAV与日期，和ETF市价独立；国内ETF仍保持原接口，并可通过AKShare `/nav`备用。其他港美ETF没有可靠披露源时返回404。NAV及规模缓存改用规范资产标识，拒绝自定义代码与源ticker错配，过往不含可靠身份的legacy-ID缓存不再迁移。
+`/api/nav` 默认支持 IWM、SPY、DIA 与香港盈富2800的披露NAV；QQQ适配器默认需发行人许可，和ETF市价、指数点位及IOPV独立；国内ETF仍保持原接口，并可通过AKShare `/nav`备用。其他港美ETF没有可靠披露源时返回404。NAV及规模缓存改用规范资产标识，拒绝自定义代码与源ticker错配，过往不含可靠身份的legacy-ID缓存不再迁移。
 
 `/api/market-data/reference` 提供只读交易日历/公司行为，见 [账户与参考数据](ACCOUNT_EQUITIES_SETUP.md)。没有账户时返回NOT_CONFIGURED，代码接口完整不等于上游业务数据已接通。日历不会按工作日猜假期，公司行为不会自动修改账本。
 
 GitHub私有仓库为 https://github.com/Viogrok/asset-heatmap ，同步方式见README；Sites继续托管动态服务。
+
+香港盈富2800可用固定参考ID `HK:02800` 读取NAV，不添加个人账本或观察列表。现有自定义目录若含该HKD柜台，则也可用原资产ID。其余未知基金仍返回404，不能用上述5只白名单代表全市场覆盖。
+
+最终许可边界：QQQ发行人NAV虽已实现技术适配，但Invesco条款限制重复自动访问，默认返回503/AUTHORIZATION_REQUIRED；只在确有发行人许可后配置INVESCO_NAV_LICENSE_CONFIRMED=true。本轮可启用的发行人NAV白名单为IWM、SPY、DIA和港股2800；QQQ市场报价保留。历史段落中“接通QQQ”仅指可行性探测与解析实现，不能视为生产自动使用许可。
