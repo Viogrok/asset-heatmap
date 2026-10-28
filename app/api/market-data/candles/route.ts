@@ -1,0 +1,11 @@
+import {authorizedAssets} from '../../../../lib/quotes/assets';
+import {quoteRuntime} from '../../../../lib/quotes/runtime';
+import {instrument} from '../../../../lib/quotes/identity';
+import {fetchCryptoCandles,validateCandleRequest,verifiedCryptoPairs} from '../../../../lib/quotes/crypto';
+import {ProviderError} from '../../../../lib/quotes/types';
+export async function GET(req:Request){const all=await authorizedAssets();if(!all)return Response.json({error:'请先登录'},{status:401});const p=new URL(req.url).searchParams,a=all.find(a=>a.id===p.get('asset')),provider=p.get('provider')||'binance',interval=p.get('interval')||'1m',limit=Number(p.get('limit')||100);
+ if(!a||!['binance','okx'].includes(provider)||!/^[0-9]{1,2}[smhdwM]$/.test(interval)||!Number.isInteger(limit)||limit<1||limit>300)return Response.json({error:'资产、行情源、K线间隔或条数无效'},{status:400});
+ const svc=quoteRuntime();try{validateCandleRequest(provider as 'binance'|'okx',instrument(a),interval,limit,svc.context);}catch(e){return Response.json({error:e instanceof Error?e.message:'K线参数无效',code:e instanceof ProviderError?e.code:'INVALID_ARGUMENT'},{status:400});}
+ const key=`md:candles:${provider}:${instrument(a).assetId}:${interval}:${limit}`,cached=await svc.store.get<any>(key);if(cached&&Date.now()-cached.updated<15000)return Response.json(cached.value);
+ const owner=crypto.randomUUID();if(!await svc.store.lease('refresh:'+key,owner,Date.now(),20000))return cached?Response.json({...cached.value,stale:true}):Response.json({error:'K线正在更新'},{status:503});
+ try{await svc.checkAvailable(provider);const pairs=await verifiedCryptoPairs(provider as 'binance'|'okx',[instrument(a)],svc.context);if(!pairs[instrument(a).assetId])throw new ProviderError('UNSUPPORTED_SYMBOL','该行情源未提供此资产的已核验现货交易对');await svc.allowed(provider);const data=await fetchCryptoCandles(provider as 'binance'|'okx',instrument(a),interval,limit,svc.context);await svc.store.put(key,data,Date.now());await svc.success(provider);return Response.json(data);}catch(e){const f=await svc.failure(provider,e);return Response.json({error:f.message,code:f.code,retryAt:f.retryAt},{status:e instanceof ProviderError&&['INVALID_ARGUMENT','UNSUPPORTED','UNSUPPORTED_SYMBOL'].includes(e.code)?400:503});}finally{await svc.store.release('refresh:'+key,owner);}}

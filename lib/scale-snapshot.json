@@ -1,0 +1,130 @@
+{
+  "159545": {
+    "value": 6562000000,
+    "currency": "CNY",
+    "kind": "aum",
+    "asOf": "2026-09-30",
+    "fetched": "2026-10-27T03:11:38.122Z",
+    "source": "东方财富基金档案（报告期净资产）"
+  },
+  "510500": {
+    "value": 41908000000,
+    "currency": "CNY",
+    "kind": "aum",
+    "asOf": "2026-09-30",
+    "fetched": "2026-10-27T03:11:38.122Z",
+    "source": "东方财富基金档案（报告期净资产）"
+  },
+  "513130": {
+    "value": 32151000000,
+    "currency": "CNY",
+    "kind": "aum",
+    "asOf": "2026-09-30",
+    "fetched": "2026-10-27T03:11:38.122Z",
+    "source": "东方财富基金档案（报告期净资产）"
+  },
+  "515180": {
+    "value": 18105000000,
+    "currency": "CNY",
+    "kind": "aum",
+    "asOf": "2026-09-30",
+    "fetched": "2026-10-27T03:11:38.122Z",
+    "source": "东方财富基金档案（报告期净资产）"
+  },
+  "563220": {
+    "value": 7484000000,
+    "currency": "CNY",
+    "kind": "aum",
+    "asOf": "2026-09-30",
+    "fetched": "2026-10-27T03:11:38.122Z",
+    "source": "东方财富基金档案（报告期净资产）"
+  },
+  "563360": {
+    "value": 36419000000,
+    "currency": "CNY",
+    "kind": "aum",
+    "asOf": "2026-09-30",
+    "fetched": "2026-10-27T03:11:38.122Z",
+    "source": "东方财富基金档案（报告期净资产）"
+  },
+  "BTC": {
+    "value": 1600549118926.656,
+    "currency": "USD",
+    "kind": "crypto-cap",
+    "asOf": "2026-10-27T03:11:34.000Z",
+    "fetched": "2026-10-27T03:11:36.333Z",
+    "source": "CoinGecko（流通市值）"
+  },
+  "ETH": {
+    "value": 281968235391.3217,
+    "currency": "USD",
+    "kind": "crypto-cap",
+    "asOf": "2026-10-27T03:11:24.000Z",
+    "fetched": "2026-10-27T03:11:36.333Z",
+    "source": "CoinGecko（流通市值）"
+  },
+  "SOL": {
+    "value": 58947239816.67194,
+    "currency": "USD",
+    "kind": "crypto-cap",
+    "asOf": "2026-10-27T03:11:24.000Z",
+    "fetched": "2026-10-27T03:11:36.333Z",
+    "source": "CoinGecko（流通市值）"
+  },
+  "BNB": {
+    "value": 96982878286.30832,
+    "currency": "USD",
+    "kind": "crypto-cap",
+    "asOf": "2026-10-27T03:11:24.000Z",
+    "fetched": "2026-10-27T03:11:36.333Z",
+    "source": "CoinGecko（流通市值）"
+  },
+  "XRP": {
+    "value": 82089519019.12115,
+    "currency": "USD",
+    "kind": "crypto-cap",
+    "asOf": "2026-10-27T03:11:24.000Z",
+    "fetched": "2026-10-27T03:11:36.333Z",
+    "source": "CoinGecko（流通市值）"
+  },
+  "TRX": {
+    "value": 31239440548.41413,
+    "currency": "USD",
+    "kind": "crypto-cap",
+    "asOf": "2026-10-27T03:11:24.000Z",
+    "fetched": "2026-10-27T03:11:36.333Z",
+    "source": "CoinGecko（流通市值）"
+  },
+  "QQQ": {
+    "value": 475963104000,
+    "currency": "USD",
+    "kind": "aum",
+    "asOf": null,
+    "fetched": "2026-10-27T03:11:38.122Z",
+    "source": "Nasdaq ETF Summary（AUM，千美元转美元）"
+  },
+  "DIA": {
+    "value": 45119360000,
+    "currency": "USD",
+    "kind": "aum",
+    "asOf": null,
+    "fetched": "2026-10-27T03:11:38.122Z",
+    "source": "Nasdaq ETF Summary（AUM，千美元转美元）"
+  },
+  "IWM": {
+    "value": 74976422000,
+    "currency": "USD",
+    "kind": "aum",
+    "asOf": null,
+    "fetched": "2026-10-27T03:11:38.122Z",
+    "source": "Nasdaq ETF Summary（AUM，千美元转美元）"
+  },
+  "SPY": {
+    "value": 806730944000,
+    "currency": "USD",
+    "kind": "aum",
+    "asOf": null,
+    "fetched": "2026-10-27T03:11:38.122Z",
+    "source": "Nasdaq ETF Summary（AUM，千美元转美元）"
+  }
+}

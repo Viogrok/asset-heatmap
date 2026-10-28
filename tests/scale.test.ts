@@ -1,0 +1,9 @@
+import {test} from 'node:test';import assert from 'node:assert/strict';
+import {parseFundScale,parseNasdaqScale,parseStockScale,matchesScaleBasis} from '../lib/scale.ts';import {layoutHeatmap} from '../lib/heatmap.ts';
+const fetched='2026-10-27T00:00:00Z';
+test('ETF净资产规模按亿元换算，并保留报告日期而非抓取日期',()=>{const s=parseFundScale('<th>净资产规模</th><td>419.08亿元（截止至：2026年09月30日）</td>',fetched);assert.equal(s.value,41908000000);assert.equal(s.asOf,'2026-09-30');assert.equal(s.currency,'CNY');assert.equal(s.kind,'aum');});
+test('拒绝无报告日期的境内基金规模，不能以份额规模代替',()=>{assert.throws(()=>parseFundScale('份额规模419亿份',fetched));assert.throws(()=>parseFundScale('净资产规模419.08亿元',fetched));});
+test('Nasdaq AUM千美元换算，不能误用MarketCap字段',()=>{const s=parseNasdaqScale({data:{summaryData:{AUM:{label:'Assets Under Management (,000)',value:'1,234'},MarketCap:{value:'999'}}}},fetched);assert.equal(s.value,1234000);assert.equal(s.currency,'USD');assert.equal(s.asOf,null);assert.throws(()=>parseNasdaqScale({data:{summaryData:{MarketCap:{value:'999'}}}},fetched));});
+test('股票总市值按供应商亿元单位换算，空字段不补零',()=>{const v=Array(47).fill('');v[45]='123.45';assert.equal(parseStockScale('v="'+v.join('~')+'"','HKD',fetched).value,12345000000);assert.throws(()=>parseStockScale('v=""','CNY',fetched));});
+test('市场规模模式不受涨跌幅干扰，缺失规模不占面积',()=>{const rows=[{id:'a',group:'ETF',value:null,scale:100,change:-20},{id:'b',group:'ETF',value:null,scale:400,change:0},{id:'c',group:'ETF',value:null,scale:null,change:100}];const out=layoutHeatmap(rows,1000,600,false,'size').filter(x=>x.type==='leaf');assert.deepEqual(out.map(x=>x.node.symbol),['b','a']);assert.ok(Math.abs(out[0].rect.w*out[0].rect.h/(out[1].rect.w*out[1].rect.h)-4)<1e-8);});
+test('股票、基金和加密的规模口径分开，指数没有自身资产规模',()=>{assert.equal(matchesScaleBasis('ETF','aum'),true);assert.equal(matchesScaleBasis('股票','aum'),false);assert.equal(matchesScaleBasis('指数','market-cap'),false);assert.equal(matchesScaleBasis('加密','crypto-cap'),true);});

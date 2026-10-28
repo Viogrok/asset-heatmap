@@ -1,0 +1,26 @@
+export type Stored<T>={value:T;updated:number};
+export interface QuoteStore{
+ get<T>(key:string):Promise<Stored<T>|null>;put(key:string,value:unknown,now:number):Promise<void>;
+ lease(key:string,owner:string,now:number,ttl:number):Promise<boolean>;release(key:string,owner:string):Promise<void>;
+ budget(key:string,limit:number,period:number,now:number,cost?:number):Promise<boolean>;
+ list<T>(prefix:string):Promise<Stored<T>[]>;
+ getMany<T>(keys:string[]):Promise<Map<string,Stored<T>>>;
+ putMany(entries:{key:string;value:unknown}[],now:number):Promise<void>;
+ leaseMany(keys:string[],owner:string,now:number,ttl:number):Promise<Set<string>>;
+ releaseMany(keys:string[],owner:string):Promise<void>;
+}
+/** D1 is shared across devices/isolates; leases prevent simultaneous upstream refreshes. */
+export class D1QuoteStore implements QuoteStore{
+ private db:D1Database;constructor(db:D1Database){this.db=db;}
+ private async batch<T>(statements:D1PreparedStatement[]){if(!statements.length)return [] as D1Result<T>[];return this.db.batch?this.db.batch<T>(statements):Promise.all(statements.map(s=>s.all<T>()));}
+ async get<T>(key:string){const r=await this.db.prepare('SELECT payload,updated FROM quote_cache WHERE key=?').bind(key).first<{payload:string;updated:number}>();if(!r)return null;try{return {value:JSON.parse(r.payload) as T,updated:r.updated};}catch{return null;}}
+ async put(key:string,value:unknown,now:number){const sourceTime=key.startsWith('md:v1:quote:')?Date.parse((value as {receivedAt?:string})?.receivedAt||''):NaN;const updated=Number.isFinite(sourceTime)?sourceTime:now;await this.db.prepare('INSERT INTO quote_cache(key,payload,updated) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET payload=excluded.payload,updated=excluded.updated WHERE quote_cache.updated<=excluded.updated').bind(key,JSON.stringify(value),updated).run();}
+ async lease(key:string,owner:string,now:number,ttl:number){const r=await this.db.prepare('INSERT INTO market_data_leases(key,owner,expires) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET owner=excluded.owner,expires=excluded.expires WHERE market_data_leases.expires<=? OR market_data_leases.owner=? RETURNING key').bind(key,owner,now+ttl,now,owner).first();return !!r;}
+ async release(key:string,owner:string){await this.db.prepare('DELETE FROM market_data_leases WHERE key=? AND owner=?').bind(key,owner).run();}
+ async budget(key:string,limit:number,period:number,now:number,cost=1){const window=Math.floor(now/period)*period;const r=await this.db.prepare('INSERT INTO market_data_budgets(key,window,used) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET window=excluded.window,used=CASE WHEN market_data_budgets.window=excluded.window THEN market_data_budgets.used+excluded.used ELSE excluded.used END WHERE market_data_budgets.window<>excluded.window OR market_data_budgets.used+excluded.used<=? RETURNING used').bind(key,window,cost,limit).first<{used:number}>();return !!r&&r.used<=limit;}
+ async list<T>(prefix:string){const r=await this.db.prepare('SELECT payload,updated FROM quote_cache WHERE key LIKE ? LIMIT 512').bind(prefix+'%').all<{payload:string;updated:number}>();return r.results.flatMap(x=>{try{return [{value:JSON.parse(x.payload) as T,updated:x.updated}];}catch{return [];}});}
+ async getMany<T>(keys:string[]){const unique=[...new Set(keys)],statements:D1PreparedStatement[]=[];for(let i=0;i<unique.length;i+=80){const part=unique.slice(i,i+80);statements.push(this.db.prepare('SELECT key,payload,updated FROM quote_cache WHERE key IN ('+part.map(()=>'?').join(',')+')').bind(...part));}const results=await this.batch<{key:string;payload:string;updated:number}>(statements),out=new Map<string,Stored<T>>();for(const r of results)for(const row of r.results||[]){try{out.set(row.key,{value:JSON.parse(row.payload),updated:row.updated});}catch{}}return out;}
+ async putMany(entries:{key:string;value:unknown}[],now:number){const statements=entries.map(({key,value})=>{const stamp=key.startsWith('md:v1:quote:')?Date.parse((value as {receivedAt?:string})?.receivedAt||''):NaN;return this.db.prepare('INSERT INTO quote_cache(key,payload,updated) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET payload=excluded.payload,updated=excluded.updated WHERE quote_cache.updated<=excluded.updated').bind(key,JSON.stringify(value),Number.isFinite(stamp)?stamp:now);});await this.batch(statements);}
+ async leaseMany(keys:string[],owner:string,now:number,ttl:number){const statements=[...new Set(keys)].map(key=>this.db.prepare('INSERT INTO market_data_leases(key,owner,expires) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET owner=excluded.owner,expires=excluded.expires WHERE market_data_leases.expires<=? OR market_data_leases.owner=? RETURNING key').bind(key,owner,now+ttl,now,owner));const results=await this.batch<{key:string}>(statements);return new Set(results.flatMap(r=>(r.results||[]).map(x=>x.key)));}
+ async releaseMany(keys:string[],owner:string){const statements:D1PreparedStatement[]=[];for(let i=0;i<keys.length;i+=80){const part=keys.slice(i,i+80);statements.push(this.db.prepare('DELETE FROM market_data_leases WHERE owner=? AND key IN ('+part.map(()=>'?').join(',')+')').bind(owner,...part));}await this.batch(statements);}
+}

@@ -1,0 +1,10 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {layoutHeatmap,tileStyle} from '../lib/heatmap.ts';
+const rows=[{id:'small',group:'A股',value:10000,change:1},{id:'big',group:'A股',value:40000,change:4},{id:'medium',group:'A股',value:20000,change:-2}];
+const leaves=(portfolio:boolean,mode:'equal'|'move')=>layoutHeatmap(rows,1000,600,portfolio,mode).filter(x=>x.type==='leaf');
+test('同组持仓按真实市值排序，面积保持4:2:1',()=>{const out=leaves(true,'equal');assert.deepEqual(out.map(x=>x.node.symbol),['big','medium','small']);const areas=out.map(x=>x.rect.w*x.rect.h);assert.ok(Math.abs(areas[0]/areas[2]-4)<1e-8);assert.ok(Math.abs(areas[1]/areas[2]-2)<1e-8);});
+test('看盘按绝对波动分配面积，涨跌方向不影响大小',()=>{const out=leaves(false,'move');assert.deepEqual(out.map(x=>x.node.symbol),['big','medium','small']);assert.ok(Math.abs(out[0].rect.w*out[0].rect.h/(out[1].rect.w*out[1].rect.h)-2)<1e-8);});
+test('等面积仍按波动排序，零涨跌和缺失状态不会伪造权重',()=>{const out=leaves(false,'equal');const areas=out.map(x=>x.rect.w*x.rect.h);assert.ok(Math.abs(areas[0]-areas[2])<1e-8);const missing=[{id:'none',group:'A股',value:null,change:null},{id:'flat',group:'A股',value:5,change:0}];assert.equal(layoutHeatmap(missing,600,400,false,'move').filter(x=>x.type==='leaf').length,0);assert.equal(layoutHeatmap(missing,600,400,false,'equal').filter(x=>x.type==='leaf').length,2);assert.equal(layoutHeatmap(missing,600,400,true,'equal').filter(x=>x.type==='leaf').length,1);});
+test('同权重按资产编号稳定排列，布局不依赖配色',()=>{const input=rows.map(x=>({...x,value:1,change:1}));assert.deepEqual(layoutHeatmap(input,1000,600,true,'equal'),layoutHeatmap([...input].reverse(),1000,600,true,'equal'));});
+test('红绿互换、零和缺失可辨，所有文字对比度至少4.5:1',()=>{assert.equal(tileStyle(1,true).fill,tileStyle(-1,false).fill);assert.notEqual(tileStyle(.01,true).fill,tileStyle(0,true).fill);assert.notEqual(tileStyle(null,true).fill,tileStyle(0,true).fill);for(let i=-1000;i<=1000;i++){const c=tileStyle(i/100,true);assert.ok(c.contrast>=4.5,`change ${i/100}: ${c.contrast}`);}assert.ok(tileStyle(null,true).contrast>=4.5);});
